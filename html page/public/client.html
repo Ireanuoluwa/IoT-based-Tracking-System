@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Tracking Dashboard</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: #f4f4f9;
+      }
+      header {
+        background: #333;
+        color: #fff;
+        padding: 1rem 0;
+        text-align: center;
+      }
+      .container {
+        padding: 1rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+      }
+      table,
+      th,
+      td {
+        border: 1px solid #ccc;
+      }
+      th,
+      td {
+        padding: 0.5rem;
+        text-align: left;
+      }
+      th {
+        background-color: #f4f4f4;
+      }
+      .stats {
+        display: flex;
+        justify-content: space-between;
+        padding: 1rem 0;
+      }
+      .stats div {
+        background: #fff;
+        border: 1px solid #ddd;
+        padding: 1rem;
+        border-radius: 5px;
+        box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+        text-align: center;
+        flex: 1;
+        margin: 0 0.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Live Tracking Dashboard</h1>
+    </header>
+    <div class="container">
+      <div class="stats">
+        <div>
+          <h2>Battery Level</h2>
+          <p id="battery-level">Fetching...</p>
+        </div>
+        <div>
+          <h2>Total Clients</h2>
+          <p id="total-clients">Fetching...</p>
+        </div>
+      </div>
+
+      <h2>Client Bookings</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Client ID</th>
+            <th>Phone Number</th>
+            <th>From</th>
+            <th>To</th>
+            <th>Latest Live Update</th>
+            <th>Latest Live update (Address)</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="client-data">
+          <tr class="loading-row">
+            <td colspan="6" style="text-align: center">Loading...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <script>
+      const apiUrl = 'http://34.238.115.46:8000/api'
+
+      const displayedClients = new Set()
+
+      async function fetchBatteryLevel() {
+        try {
+          const response = await fetch(`${apiUrl}/battery`)
+          const batteryData = await response.json()
+          const percentage = batteryData.percentage
+            ? `${batteryData.percentage}%`
+            : 'Unknown'
+          document.getElementById('battery-level').textContent = percentage
+        } catch (error) {
+          console.error('Error fetching battery level:', error)
+          document.getElementById('battery-level').textContent = 'Error'
+        }
+      }
+
+      async function fetchClientData() {
+        try {
+          const response = await fetch(`${apiUrl}/getClientDetails`)
+          const clientData = await response.json()
+
+          // Remove the loading row before processing new data
+          removeLoadingRow()
+
+          if (!clientData || !clientData._id) {
+            if (displayedClients.size === 0) {
+              document.getElementById('client-data').innerHTML =
+                '<tr><td colspan="8" style="text-align:center;">No data found</td></tr>'
+            }
+            return
+          }
+
+          const {
+            clientId,
+            phone,
+            fromLat,
+            fromLng,
+            destLat,
+            destLng,
+            delivered,
+          } = clientData
+
+          // Check if this clientId has already been displayed
+          if (displayedClients.has(clientId)) return
+
+          // Fetch geocoded address for the "From" coordinates
+          const fromAddress = await fetchGeocodedAddress(fromLat, fromLng)
+
+          // Fetch geocoded address for the "To" coordinates
+          const toAddress = await fetchGeocodedAddress(destLat, destLng)
+
+          // Create a new table row for this client
+          const tableRow = document.createElement('tr')
+          tableRow.innerHTML = `
+      <td>${clientId || 'N/A'}</td>
+      <td>${phone || 'N/A'}</td>
+      <td>${fromAddress || 'Fetching address...'}</td>
+      <td>${toAddress || 'Fetching address...'}</td>
+      <td id="latest-live-update-${clientId}">Fetching...</td>
+      <td id="geocoded-address-${clientId}">Fetching...</td>
+      <td id="status-${clientId}">${
+            delivered ? 'Delivered' : 'Not Delivered'
+          }</td>
+      <td><button onclick="markAsDelivered('${clientId}')">${
+            delivered ? 'Mark as Not Delivered' : 'Mark as Delivered'
+          }</button></td>
+    `
+
+          document.getElementById('client-data').appendChild(tableRow) // Add the row to the table
+          displayedClients.add(clientId) // Mark this clientId as displayed
+
+          // Fetch live location and geocoded address for this client
+          fetchLastLocation(clientId)
+          updateTotalClients()
+        } catch (error) {
+          console.error('Error fetching client data:', error)
+          if (displayedClients.size === 0) {
+            document.getElementById('client-data').innerHTML =
+              '<tr><td colspan="8" style="text-align:center;">Error fetching data</td></tr>'
+          }
+        }
+      }
+
+      async function fetchLastLocation(clientId) {
+        try {
+          const response = await fetch(`${apiUrl}/liveLocation/${clientId}`)
+          const locationData = await response.json()
+
+          if (!locationData || !locationData.timestamp) {
+            // Retry fetching live location after 5 seconds
+            setTimeout(() => fetchLastLocation(clientId), 5000)
+            return
+          }
+
+          const formattedTimestamp = new Date(
+            locationData.timestamp
+          ).toLocaleString()
+          document.getElementById(
+            `latest-live-update-${clientId}`
+          ).textContent = formattedTimestamp
+
+          // Reverse Geocode the live location
+          const liveLocationAddress = await fetchGeocodedAddress(
+            locationData.lat,
+            locationData.lng
+          )
+          document.getElementById(`geocoded-address-${clientId}`).textContent =
+            liveLocationAddress
+        } catch (error) {
+          console.error(
+            `Error fetching live location for clientId ${clientId}:`,
+            error
+          )
+          setTimeout(() => fetchLastLocation(clientId), 5000) // Retry fetching after 5 seconds
+        }
+      }
+
+      async function fetchGeocodedAddress(lat, lng) {
+        try {
+          const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=AIzaSyAWqM1YB1H6Z42XwE37M4Iv3Iiy0WX42gE`
+          const response = await fetch(geocodeUrl)
+          const geocodeData = await response.json()
+
+          if (geocodeData.results && geocodeData.results.length > 0) {
+            return geocodeData.results[0].formatted_address
+          } else {
+            return 'Address not found'
+          }
+        } catch (error) {
+          console.error('Error reverse geocoding:', error)
+          return 'Error'
+        }
+      }
+
+      function updateTotalClients() {
+        const allRows = document.querySelectorAll('#client-data tr')
+
+        // Exclude rows with the class "loading-row"
+        const validRows = Array.from(allRows).filter((row) => {
+          return !row.classList.contains('loading-row')
+        })
+
+        document.getElementById('total-clients').textContent = validRows.length
+      }
+
+      function removeLoadingRow() {
+        const loadingRow = document.querySelector('#client-data .loading-row')
+        if (loadingRow) {
+          loadingRow.remove() // Remove the row from the DOM
+        }
+      }
+      function markAsDelivered(clientId) {
+        fetch(`http://34.238.115.46:8000/api/tracking/${clientId}/delivered`, {
+          method: 'PUT',
+        })
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error('Network response was not ok')
+            }
+            return response.json()
+          })
+          .then((data) => {
+            console.log('Data:', data) // Log the data
+            if (data.message.includes('updated')) {
+              const statusElement = document.getElementById(
+                `status-${clientId}`
+              )
+              const buttonElement =
+                statusElement.nextElementSibling.querySelector('button')
+              statusElement.innerText = data.delivered
+                ? 'Delivered'
+                : 'Not Delivered'
+              buttonElement.innerText = data.delivered
+                ? 'Mark as Not Delivered'
+                : 'Mark as Delivered'
+            } else {
+              alert('Failed to update delivery status')
+            }
+          })
+          .catch((error) => {
+            console.error('Error:', error)
+            alert('Error updating delivery status')
+          })
+      }
+
+      fetchBatteryLevel()
+      fetchClientData()
+
+      // Refresh data every 10 seconds
+      setInterval(fetchBatteryLevel, 10000)
+      setInterval(fetchClientData, 10000)
+    </script>
+  </body>
+</html>
